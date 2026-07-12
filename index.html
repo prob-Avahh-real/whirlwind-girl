@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>旋风少女 · Whirlwind Girl</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;
+  font-family:"PingFang SC","Microsoft YaHei",sans-serif}
+canvas{display:block;position:absolute;top:0;left:0;width:100%;height:100%}
+#hud{position:absolute;top:8px;left:50%;transform:translateX(-50%);z-index:10;pointer-events:none;
+  color:#a0a0d0;font-size:13px;text-align:center}
+#hud .title{font-size:17px;font-weight:700;color:#c0b0e0}
+#hint{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);z-index:10;pointer-events:none;
+  color:#8090b0;font-size:11px;text-align:center;opacity:.7}
+#complete{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;
+  justify-content:center;z-index:20;background:rgba(20,20,40,.95);color:#c0b0e0}
+#complete.show{display:flex}#complete h2{font-size:34px;font-weight:900;color:#c0a0e0;margin-bottom:8px}
+#complete button{background:linear-gradient(135deg,#6040a0,#302080);border:none;color:#fff;
+  font-size:16px;font-weight:700;padding:10px 30px;border-radius:24px;cursor:pointer;margin-top:10px}
+/* Voice/glasses indicator */
+#voice-bar{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);background:rgba(20,30,50,.9);
+  border:1px solid#4060a055;border-radius:16px;padding:4px 12px;color:#6080c0;font-size:9px;z-index:50;
+  display:none;align-items:center;gap:5px}
+#voice-bar .vd{width:5px;height:5px;border-radius:50%;background:#6080c0;animation:vp 1.2s ease infinite}
+#voice-bar.show{display:flex}@keyframes vp{0%,100%{opacity:.3}50%{opacity:1}}
+/* Watch/glasses adaptations */
+@media(max-width:400px) and (max-height:320px),(max-width:320px) and (max-height:400px){
+  html{font-size:10px}#hud{font-size:10px}#hud .title{font-size:13px}
+  #hint{font-size:8px;bottom:30px}#complete h2{font-size:22px}#complete button{font-size:12px;padding:6px 20px}
+  #voice-bar{bottom:6px;font-size:7px;padding:2px 8px}
+}
+</style>
+</head>
+<body>
+<div id="hud"><span class="title" id="level-title">第一步</span><br><span id="level-desc">点击地面移动角色</span></div>
+<div id="hint">点击可到达的方块移动 · 到达紫色终点通关</div>
+<div id="complete"><h2>🌀 通关！</h2><p style="opacity:.7" id="complete-text"></p><button id="next-btn" onclick="nextLevel()">下一关</button></div>
+<div id="voice-bar"><span class="vd"></span> 语音激活 · 说「上下左右」移动</div>
+<canvas id="game"></canvas>
+
+<script>
+// ==================== ISOMETRIC ENGINE ====================
+const canvas=document.getElementById("game"),ctx=canvas.getContext("2d");
+let W,H,cx,cy;
+const TW=48,TH=24; // tile dimensions
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight;cx=W/2;cy=H*.4}
+window.addEventListener("resize",resize);resize();
+
+// Convert grid to screen
+function toScreen(gx,gy,gz=0){return{x:cx+(gx-gy)*TW/2,y:cy+(gx+gy)*TH/2-gz*TH*1.5}}
+function fromScreen(sx,sy){const dx=sx-cx,dy=sy-cy;const gx=(dx/TW+dy/TH)/2,gy=(dy/TH-dx/TW)/2;return{x:Math.round(gx),y:Math.round(gy)}}
+
+// ==================== LEVEL DATA ====================
+// Tile types: 0=empty, 1=floor, 2=wall, 3=stair_up, 4=stair_down, 5=goal
+const LEVELS=[
+  { // Level 1: First Steps
+    title:"第一步",desc:"等距世界的第一步",
+    grid:[
+      [1,1,1,1,1,1,1],
+      [1,1,1,1,1,1,1],
+      [1,1,2,2,1,1,1],
+      [1,1,1,1,1,1,1],
+      [1,1,1,1,1,1,1],
+      [0,1,1,1,1,1,5],
+    ],
+    gx:0,gy:0,start:{x:0,y:0},
+    heights:{} // default height=0 for all floor tiles
+  },
+  { // Level 2: Corridor — impossible geometry via height illusion
+    title:"回廊",desc:"看似相连，实则分离",
+    grid:[
+      [1,1,1,1,1,1,1,1],
+      [1,1,1,1,1,1,1,1],
+      [1,1,2,0,0,1,1,1],
+      [1,1,1,1,1,1,1,1],
+      [1,1,1,1,1,1,1,1],
+      [0,0,1,1,1,1,1,5],
+    ],
+    gx:0,gy:0,start:{x:0,y:0},
+    heights:{"2,1":1,"3,1":1,"2,2":1,"3,2":1,"3,3":1,"4,3":1,"3,4":1,"4,4":1}
+  },
+  { // Level 3: Tower — multi-height with stairs
+    title:"升天",desc:"攀登不可能之塔",
+    grid:[
+      [1,1,1,1,0,0,0,0],
+      [1,1,1,1,1,1,0,0],
+      [1,1,2,1,1,1,1,0],
+      [1,1,3,1,1,1,1,1],
+      [1,1,1,4,1,1,1,1],
+      [0,1,1,1,4,1,1,5],
+    ],
+    gx:0,gy:0,start:{x:0,y:0},
+    heights:{"2,2":2,"3,2":2,"3,3":3,"3,4":2,"4,3":2,"4,0":1,"5,0":1,"5,1":1,"5,2":1,"5,3":1,"5,4":1,"5,5":1}
+  }
+];
+
+// ==================== GAME STATE ====================
+let levelIdx=0,curLevel=null,playerPos={x:0,y:0,gz:0},playerTarget=null;
+let playerPath=[],pathIdx=0,animTick=0,animId=null,goalReached=false;
+
+function loadLevel(idx){
+  levelIdx=idx;curLevel=LEVELS[idx];goalReached=false;
+  playerPos={x:curLevel.start.x,y:curLevel.start.y,gz:getHeight(curLevel.start.x,curLevel.start.y)};
+  playerTarget=null;playerPath=[];pathIdx=0;
+  document.getElementById("level-title").textContent=curLevel.title;
+  document.getElementById("level-desc").textContent=curLevel.desc;
+  document.getElementById("complete").classList.remove("show");
+  document.getElementById("hint").style.display="block";
+  // Center camera on level
+  const maxG=Math.max(curLevel.grid.length,curLevel.grid[0].length);
+  cx=W/2;cy=H*.3+maxG*TH/4;
+  if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(loop);
+}
+
+function getHeight(gx,gy){
+  if(!curLevel||!curLevel.heights)return 0;
+  return curLevel.heights[gx+","+gy]||0;
+}
+
+function getTile(gx,gy){
+  if(!curLevel)return 0;
+  if(gx<0||gy<0||gx>=curLevel.grid[0].length||gy>=curLevel.grid.length)return 0;
+  return curLevel.grid[gy][gx];
+}
+
+function isWalkable(gx,gy){
+  const t=getTile(gx,gy);if(t===0||t===2)return false;
+  // Check height difference — can only step up/down 1 unit
+  const h1=getHeight(gx,gy),h2=playerPos.gz;
+  if(Math.abs(h1-h2)>1)return false;
+  return true;
+}
+
+// BFS path finding
+function findPath(sx,sy,ex,ey){
+  const sh=getHeight(sx,sy);const visited=new Set();const q=[{x:sx,y:sy,gz:sh,path:[]}];
+  const key=(x,y)=>x+","+y;
+  visited.add(key(sx,sy)+"@"+sh);
+  while(q.length>0){
+    const cur=q.shift();
+    if(cur.x===ex&&cur.y===ey)return cur.path;
+    const nbrs=[[1,0],[0,1],[-1,0],[0,-1]];
+    for(const[dx,dy]of nbrs){
+      const nx=cur.x+dx,ny=cur.y+dy;
+      if(!isWalkableStep(cur,nx,ny))continue;
+      const nh=getHeight(nx,ny);const nk=key(nx,ny)+"@"+nh;
+      if(visited.has(nk))continue;
+      visited.add(nk);
+      q.push({x:nx,y:ny,gz:nh,path:[...cur.path,{x:nx,y:ny,gz:nh}]});
+    }
+  }
+  return null;
+}
+
+function isWalkableStep(from,nx,ny){
+  const t=getTile(nx,ny);if(t===0||t===2)return false;
+  const nh=getHeight(nx,ny);const fh=from.gz;
+  if(Math.abs(nh-fh)>1)return false;
+  // Stairs must match direction
+  if(t===3&&nh<=fh)return false; // stair_up must go to a higher height
+  if(t===4&&nh>=fh)return false; // stair_down must go to a lower height
+  return true;
+}
+
+// ==================== INPUT ====================
+canvas.addEventListener("click",e=>{
+  if(goalReached||!curLevel)return;
+  const rect=canvas.getBoundingClientRect();
+  const sx=e.clientX-rect.left,sy=e.clientY-rect.top;
+  const g=fromScreen(sx,sy);
+  if(g.x<0||g.y<0||g.x>=curLevel.grid[0].length||g.y>=curLevel.grid.length)return;
+  const tile=getTile(g.x,g.y);
+  if(tile===0||tile===2)return;
+  // Special: tap on goal when player is adjacent
+  if(tile===5&&Math.abs(g.x-playerPos.x)+Math.abs(g.y-playerPos.y)<=1){
+    playerTarget={x:g.x,y:g.y};playerPath=[{x:g.x,y:g.y,gz:getHeight(g.x,g.y)}];pathIdx=0;return}
+  // Find path
+  const path=findPath(playerPos.x,playerPos.y,g.x,g.y);
+  if(!path||path.length===0)return;
+  playerPath=path;pathIdx=0;
+});
+
+canvas.addEventListener("touchstart",e=>{e.preventDefault();
+  const t=e.changedTouches[0];const ev=new MouseEvent("click",{clientX:t.clientX,clientY:t.clientY});canvas.dispatchEvent(ev)},{passive:false});
+
+// ==================== GAME LOOP ====================
+function loop(){
+  animTick++;
+  // Move along path
+  if(playerPath.length>0&&pathIdx<playerPath.length){
+    if(animTick%12===0){ // step every 12 frames (~200ms)
+      const next=playerPath[pathIdx];
+      playerPos.x=next.x;playerPos.y=next.y;playerPos.gz=next.gz;
+      pathIdx++;
+      if(pathIdx>=playerPath.length){playerPath=[];pathIdx=0;
+        // Check if reached goal
+        const t=getTile(playerPos.x,playerPos.y);
+        if(t===5&&!goalReached){goalReached=true;
+          document.getElementById("hint").style.display="none";
+          const c=document.getElementById("complete");c.classList.add("show");
+          document.getElementById("complete-text").textContent=curLevel.title+" 完成！";
+          document.getElementById("next-btn").style.display=levelIdx<LEVELS.length-1?"inline":"none"}}}
+  }
+  centerOnPlayer();render();animId=requestAnimationFrame(loop);
+}
+
+function nextLevel(){if(levelIdx<LEVELS.length-1)loadLevel(levelIdx+1)}
+
+// ==================== RENDER ====================
+function render(){
+  ctx.clearRect(0,0,W,H);
+  // Background gradient
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,"#1a1a2e");bg.addColorStop(.5,"#252550");bg.addColorStop(1,"#1a1a30");
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+  // Stars
+  ctx.fillStyle="#ffffff15";
+  for(let i=0;i<40;i++){ctx.fillRect((i*173)%W,(i*79)%H*.5,1.5,1.5)}
+
+  if(!curLevel)return;
+  const gw=curLevel.grid[0].length,gh=curLevel.grid.length;
+
+  // Collect all renderable objects sorted by depth (back to front)
+  const objs=[];
+  for(let y=0;y<gh;y++)for(let x=0;x<gw;x++){
+    const t=getTile(x,y);if(t===0)continue;
+    const h=getHeight(x,y);objs.push({x,y,h,t});
+  }
+  // Player
+  objs.push({x:playerPos.x+.5,y:playerPos.y+.5,h:playerPos.gz+.3,t:"player"});
+
+  // Depth sort: draw upper-left first (behind), lower-right later (in front)
+  objs.sort((a,b)=>a.x+a.y+a.h-(b.x+b.y+b.h));
+
+  // Draw all objects
+  for(const o of objs){
+    const sc=toScreen(o.x,o.y,o.h);
+    if(o.t==="player"){drawPlayer(sc.x,sc.y);continue}
+    drawTile(o.x,o.y,o.t,o.h);
+  }
+
+  // Touch indicators for walkable neighbor tiles
+  const neighbors=[[1,0],[0,1],[-1,0],[0,-1]];
+  const pHalf={x:playerPos.x+.5,y:playerPos.y+.5};
+  ctx.fillStyle="#ffffff10";
+  for(const[dx,dy]of neighbors){
+    const nx=Math.round(pHalf.x+dx-.5),ny=Math.round(pHalf.y+dy-.5);
+    if(getTile(nx,ny)===0||getTile(nx,ny)===2)continue;
+    if(!isWalkableStep({x:playerPos.x,y:playerPos.y,gz:playerPos.gz},nx,ny))continue;
+    const sc=toScreen(nx+.5,ny+.5,getHeight(nx,ny)+.1);
+    ctx.beginPath();ctx.arc(sc.x,sc.y,8,0,Math.PI*2);ctx.fill();
+  }
+}
+
+function drawTile(gx,gy,type,h){
+  const sc=toScreen(gx+.5,gy+.5,h),gh=h||0;
+  const tw=TW,th=TH;
+  // Top face
+  if(type===3||type===4){} // stairs have custom top
+  else{
+    ctx.fillStyle=type===5?"#8040c0":type===2?"#303050":["#2a2a5a","#2a305a"][((gx+gy)%2)];
+    ctx.beginPath();ctx.moveTo(sc.x,sc.y-th/2);ctx.lineTo(sc.x+tw/2,sc.y);
+    ctx.lineTo(sc.x,sc.y+th/2);ctx.lineTo(sc.x-tw/2,sc.y);ctx.closePath();ctx.fill();
+  }
+  // Left face
+  ctx.fillStyle=type===5?"#6030a0":type===2?"#252545":["#20204a","#202545"][((gx+gy)%2)];
+  ctx.beginPath();ctx.moveTo(sc.x-tw/2,sc.y);ctx.lineTo(sc.x,sc.y+th/2);
+  ctx.lineTo(sc.x,sc.y+th/2+TH*gh*.5);ctx.lineTo(sc.x-tw/2,sc.y+TH*gh*.5);
+  ctx.closePath();ctx.fill();
+  // Right face
+  ctx.fillStyle=type===5?"#502090":type===2?"#202040":["#18183a","#181840"][((gx+gy)%2)];
+  ctx.beginPath();ctx.moveTo(sc.x,sc.y+th/2);ctx.lineTo(sc.x+tw/2,sc.y);
+  ctx.lineTo(sc.x+tw/2,sc.y+TH*gh*.5);ctx.lineTo(sc.x,sc.y+th/2+TH*gh*.5);
+  ctx.closePath();ctx.fill();
+  // Stair markings
+  if(type===3){ctx.fillStyle="#e0c080";ctx.fillRect(sc.x-8,sc.y-8,16,4);ctx.fillRect(sc.x-12,sc.y-2,20,4);ctx.fillRect(sc.x-16,sc.y+4,24,4)}
+  if(type===4){ctx.fillStyle="#c0a060";ctx.fillRect(sc.x-16,sc.y-8,24,4);ctx.fillRect(sc.x-12,sc.y-2,20,4);ctx.fillRect(sc.x-8,sc.y+4,16,4)}
+  // Goal glow
+  if(type===5){ctx.fillStyle="#c080ff30";ctx.beginPath();ctx.arc(sc.x,sc.y,20,0,Math.PI*2);ctx.fill()}
+}
+
+function drawPlayer(px,py){
+  const t=animTick;
+  // Shadow
+  ctx.fillStyle="#00000030";ctx.beginPath();ctx.ellipse(px,py+8,10,4,0,0,Math.PI*2);ctx.fill();
+  // Body
+  ctx.fillStyle="#e0d0ff";ctx.beginPath();ctx.arc(px,py-16,9,0,Math.PI*2);ctx.fill(); // head
+  ctx.fillStyle="#c0a0e0";
+  ctx.beginPath();ctx.moveTo(px,py-10);ctx.lineTo(px-6,py+8);ctx.quadraticCurveTo(px,py+2,px+6,py+8);ctx.closePath();ctx.fill(); // dress
+  // Hair
+  ctx.fillStyle="#5040a0";ctx.beginPath();ctx.arc(px,py-18,9,Math.PI,0);ctx.fill();
+  // Legs — walking animation
+  const bob=playerPath.length>0?Math.sin(t*.3)*3:0;
+  ctx.fillStyle="#c0b0d0";ctx.fillRect(px-3,py+8,3,6+bob);ctx.fillRect(px+1,py+8,3,6-bob);
+}
+
+// ==================== SMART HARDWARE ====================
+let isGlasses=false,isWatch=false,voiceRecog=null;
+
+function detectDevice(){
+  const w=Math.min(window.innerWidth,screen.width||9999),h=Math.min(window.innerHeight,screen.height||9999);
+  isGlasses=(w<=420&&h<=340)||(w<=340&&h<=420);isWatch=w<=280||h<=300;
+  if(isGlasses){startVoice();resize=()=>{W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight;cx=W/2;cy=H*.25};resize()}
+  if(isWatch){TW2=32;TH2=14;resize=()=>{W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight;cx=W/2;cy=H*.2};resize()}
+}
+
+function startVoice(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR)return;
+  try{voiceRecog=new SR();voiceRecog.lang="zh-CN";voiceRecog.continuous=true;voiceRecog.interimResults=false;
+    voiceRecog.onresult=e=>{const t=e.results[e.results.length-1][0].transcript.trim().toLowerCase();
+      if(/上|up|跳|升/i.test(t))handleVoice("up");
+      else if(/下|down|蹲|降/i.test(t))handleVoice("down");
+      else if(/左|left/i.test(t))handleVoice("left");
+      else if(/右|right/i.test(t))handleVoice("right");
+      else if(/目标|终点|goal|去/i.test(t))handleVoice("goal");};
+    voiceRecog.onerror=()=>{};voiceRecog.onend=()=>{if(isGlasses)voiceRecog.start()};
+    voiceRecog.start();document.getElementById("voice-bar").classList.add("show")}catch(e){}
+}
+
+function handleVoice(dir){
+  if(goalReached||!curLevel)return;
+  let tx=playerPos.x,ty=playerPos.y;
+  if(dir==="up")ty--;else if(dir==="down")ty++;else if(dir==="left")tx--;else if(dir==="right")tx++;
+  else if(dir==="goal"){for(let y=0;y<curLevel.grid.length;y++)for(let x=0;x<curLevel.grid[0].length;x++)if(getTile(x,y)===5){tx=x;ty=y;break}}
+  tx=Math.max(0,Math.min(tx,curLevel.grid[0].length-1));ty=Math.max(0,Math.min(ty,curLevel.grid.length-1));
+  const path=findPath(playerPos.x,playerPos.y,tx,ty);
+  if(path&&path.length>0){playerPath=path;pathIdx=0}
+}
+
+// Auto-scroll camera toward player on small screens
+function centerOnPlayer(){
+  if(!isWatch&&!isGlasses)return;
+  const sc=toScreen(playerPos.x+.5,playerPos.y+.5,playerPos.gz);
+  cx+=(W/2-sc.x)*.1;cy+=(H*.3-sc.y)*.1
+}
+
+// ==================== SMART RING (DeviceOrientation) ====================
+let ringMode=false,ringThrottle=0,lastOrientation={beta:0,gamma:0};
+
+function detectRing(){
+  if(typeof DeviceOrientationEvent!=="undefined"&&typeof DeviceOrientationEvent.requestPermission==="function"){
+    // iOS 13+ requires permission
+    document.getElementById("hint").textContent="点击画面以启用指环手势控制";
+    canvas.addEventListener("click",function askRing(){canvas.removeEventListener("click",askRing);
+      DeviceOrientationEvent.requestPermission().then(r=>{if(r==="granted")enableRing()}).catch(()=>{})},{once:true})
+  }else if("ondeviceorientation"in window){
+    enableRing()
+  }
+}
+
+function enableRing(){
+  ringMode=true;ringThrottle=0;document.getElementById("hint").textContent="📳 指环模式 · 倾斜手机移动角色";
+  window.addEventListener("deviceorientation",e=>{
+    if(!ringMode||goalReached||!curLevel)return;
+    ringThrottle++;if(ringThrottle%8!==0)return; // throttle to avoid spam
+    const b=e.beta||0,g=e.gamma||0;
+    const db=b-lastOrientation.beta,dg=g-lastOrientation.gamma;lastOrientation={beta:b,gamma:g};
+    if(Math.abs(db)<3&&Math.abs(dg)<3)return;
+    // Ring shake detection (rapid change = auto-goal)
+    if(Math.abs(db)>20||Math.abs(dg)>20){handleVoice("goal");return}
+    // Directional tilt
+    let tx=playerPos.x,ty=playerPos.y;
+    if(db<-5)ty--;else if(db>5)ty++;else if(dg<-5)tx--;else if(dg>5)tx++;
+    else return;
+    tx=Math.max(0,Math.min(tx,curLevel.grid[0].length-1));ty=Math.max(0,Math.min(ty,curLevel.grid.length-1));
+    const path=findPath(playerPos.x,playerPos.y,tx,ty);
+    if(path&&path.length>0){playerPath=path;pathIdx=0}
+  })
+}
+
+// ==================== SMART CANE (DeviceMotion tap/swing) ====================
+let caneMode=false,caneThrottle=0,lastAccel=0;
+
+function detectCane(){
+  if("ondevicemotion"in window){
+    caneMode=true;caneThrottle=0;
+    document.getElementById("hint").textContent="🦯 手杖模式 · 摇晃手机=方向 / 敲击=确认";
+    window.addEventListener("devicemotion",e=>{
+      if(!caneMode||goalReached||!curLevel)return;
+      caneThrottle++;if(caneThrottle%6!==0)return;
+      const a=e.accelerationIncludingGravity||{x:0,y:0,z:0};
+      const mag=Math.sqrt(a.x*a.x+a.y*a.y+a.z*a.z);
+      const dm=Math.abs(mag-lastAccel);lastAccel=mag;
+      // Cane tap (sudden accel spike)
+      if(dm>8){handleVoice("goal");return}
+      // Swing direction from accel
+      let tx=playerPos.x,ty=playerPos.y;
+      if(a.x<-3)tx--;else if(a.x>3)tx++;else if(a.y<-3)ty--;else if(a.y>3)ty++;
+      else return;
+      tx=Math.max(0,Math.min(tx,curLevel.grid[0].length-1));ty=Math.max(0,Math.min(ty,curLevel.grid.length-1));
+      const path=findPath(playerPos.x,playerPos.y,tx,ty);
+      if(path&&path.length>0){playerPath=path;pathIdx=0}
+    })
+  }
+}
+
+// Init
+detectDevice();detectRing();detectCane();loadLevel(0);
+</script>
+</body>
+</html>
